@@ -410,97 +410,74 @@ const Game: React.FC = () => {
 
     // Player damage function
     const damagePlayer = (amount: number) => {
-        // Don't damage if player is invincible or game is over
+        // Verificações iniciais
         if (playerRef.current.isInvincible || gameOver) {
-            console.log('Ignoring damage because player is invincible or game over');
+            console.log('Dano ignorado - invencível ou game over');
             return;
         }
-
-        // Primeiro vamos registrar para debug:
-        console.log(`Attempting to apply damage: ${amount} to current health: ${playerHealth}`);
-
-        // Make player temporarily invincible to prevent multiple hits
-        playerRef.current.isInvincible = true;
-
-        // Calcula o novo valor de saúde
-        let newHealth = Math.max(0, playerHealth - amount);
-        console.log(`Calculated new health: ${newHealth}`);
-
-        // Força a atualização visual
-        document.body.classList.add('force-refresh'); // Hack para forçar redraw
-        setTimeout(() => document.body.classList.remove('force-refresh'), 10);
-
-        // Atualizar a saúde
-        setPlayerHealth(newHealth);
-
-        // Verificação para debug
-        setTimeout(() => {
-            console.log(`Health after update: ${playerHealth}`);
-        }, 50);
-
-        // If health reaches 0, handle life loss
-        if (newHealth === 0) {
-            // Handle life loss
-            const newLives = playerLives - 1;
-            console.log(`Lost a life. Lives: ${playerLives} -> ${newLives}`);
-
-            // Update lives
-            setPlayerLives(newLives);
-
-            // If no more lives, game over
-            if (newLives <= 0) {
-                console.log('Game over - no lives left');
-                setTimeout(endGame, 50);
-            } else {
-                // Still have lives, restore health after a delay
-                setTimeout(() => {
-                    console.log('Restoring health to 100');
-                    setPlayerHealth(100);
-                }, 1000);
-
-                // Maintain invincibility for a while after health restoration
-                setTimeout(() => {
-                    playerRef.current.isInvincible = false;
-                    console.log('Invincibility ended after life loss');
-                }, 3000);
+    
+        // Calcular nova saúde
+        setPlayerHealth((prevHealth) => {
+            const newHealth = Math.max(0, prevHealth - amount);
+            console.log(`Saúde: ${prevHealth} -> ${newHealth}`);
+            
+            // Se a saúde chegar a zero, reduzir vidas
+            if (newHealth === 0) {
+                setPlayerLives((prevLives) => {
+                    const newLives = prevLives - 1;
+                    console.log(`Vidas: ${prevLives} -> ${newLives}`);
+    
+                    if (newLives <= 0) {
+                        console.log('Game Over - Sem vidas');
+                        setTimeout(endGame, 50);
+                    } else {
+                        // Restaurar saúde após perda de vida
+                        setTimeout(() => {
+                            setPlayerHealth(100);
+                            console.log('Saúde restaurada para 100');
+                        }, 500);
+                    }
+    
+                    return newLives;
+                });
             }
-        } else {
-            // Just took damage, end invincibility after a delay
-            setTimeout(() => {
-                playerRef.current.isInvincible = false;
-                console.log('Invincibility ended after taking damage');
-            }, 1000);
-        }
+    
+            return newHealth;
+        });
 
-        // Apply visual feedback when hit
+        // Remover invincibilidade após um tempo
+        playerRef.current.isInvincible = true;
+        setTimeout(() => {
+            playerRef.current.isInvincible = false;
+            console.log('Invencibilidade encerrada');
+        }, 1000);
+
+        // Feedback visual de dano
         if (playerRef.current.mesh) {
-            // Flash red
             const originalMaterial = (playerRef.current.mesh.material as THREE.Material).clone();
             playerRef.current.mesh.material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
 
-            // Blink effect for invincibility
+            // Efeito de piscar
             let visible = false;
             const blinkInterval = setInterval(() => {
                 if (playerRef.current.mesh && playerRef.current.isInvincible) {
                     playerRef.current.mesh.visible = visible;
                     visible = !visible;
                 } else {
-                    // Stop blinking if invincibility ended
                     clearInterval(blinkInterval);
                     if (playerRef.current.mesh) {
                         playerRef.current.mesh.visible = true;
+                        playerRef.current.mesh.material = originalMaterial;
                     }
                 }
             }, 200);
-
-            // Reset to original material
-            setTimeout(() => {
-                if (playerRef.current.mesh) {
-                    playerRef.current.mesh.material = originalMaterial;
-                    playerRef.current.mesh.visible = true;
-                }
-            }, 1000);
         }
+    };
+
+    // Método de colisão atualizado
+    const handleCollision = (damage: number) => {
+        console.log(`Colisão detectada - aplicando dano: ${damage}`);
+        damagePlayer(damage);
     };
 
     // End game function
@@ -577,7 +554,7 @@ const Game: React.FC = () => {
 
     // For debugging - explicit damage function
     const applyDirectDamage = (damage: number) => {
-        console.log('Applying direct damage:', damage);
+        // console.log('Applying direct damage:', damage);
 
         // Aplicar dano diretamente
         const newHealth = Math.max(0, playerHealth - damage);
@@ -592,58 +569,6 @@ const Game: React.FC = () => {
                 }
             }, 200);
         }
-    };
-
-    // Alternative method for handling collisions
-    const handleCollision = (damage: number) => {
-        console.log('Handling collision with damage:', damage);
-
-        // Ensure not already invincible
-        if (playerRef.current.isInvincible || gameOver) {
-            console.log('Ignoring collision - player invincible or game over');
-            return;
-        }
-
-        // Make player invincible temporarily
-        playerRef.current.isInvincible = true;
-
-        // Apply damage directly
-        const newHealth = Math.max(0, playerHealth - damage);
-        setPlayerHealth(newHealth);
-        console.log(`Health after damage: ${newHealth}`);
-
-        // Handle life loss if needed
-        if (newHealth === 0) {
-            const newLives = playerLives - 1;
-            setPlayerLives(newLives);
-            console.log(`Lives reduced to: ${newLives}`);
-
-            if (newLives <= 0) {
-                endGame();
-            } else {
-                setTimeout(() => {
-                    setPlayerHealth(100);
-                    console.log('Health restored');
-                }, 1000);
-            }
-        }
-
-        // Visual feedback
-        if (playerRef.current.mesh) {
-            const originalMaterial = playerRef.current.mesh.material;
-            playerRef.current.mesh.material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-            setTimeout(() => {
-                if (playerRef.current.mesh) {
-                    playerRef.current.mesh.material = originalMaterial;
-                }
-            }, 500);
-        }
-
-        // Reset invincibility
-        setTimeout(() => {
-            playerRef.current.isInvincible = false;
-            console.log('Invincibility ended');
-        }, 1500);
     };
 
     // Start game loop
@@ -762,7 +687,7 @@ const Game: React.FC = () => {
         if (keys[' ']) {
             // Limit firing rate by checking time since last shot
             const now = Date.now();
-            if (!playerRef.current.lastFireTime || now - playerRef.current.lastFireTime > fireRate * 1000) {
+            if (!playerRef.current.lastFireTime || now - playerRef.current.lastFireTime > fireRate * 100) {
                 fireProjectile();
                 playerRef.current.lastFireTime = now;
             }
@@ -821,7 +746,7 @@ const Game: React.FC = () => {
                 if (distanceToPlayer < collisionRadius) {
                     // Raio de colisão ajustado
                     // Log de colisão para debug
-                    console.log(`Collision detected! Distance: ${distanceToPlayer.toFixed(2)}, Radius: ${collisionRadius}`);
+                    // console.log(`Collision detected! Distance: ${distanceToPlayer.toFixed(2)}, Radius: ${collisionRadius}`);
 
                     // Tratar colisão
                     handlePlayerEnemyCollision(enemy);
