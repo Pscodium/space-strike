@@ -17,7 +17,7 @@ export default defineConfig({
         fs: {
             allow: ['.'],
         },
-        allowedHosts: [process.env.HOST]
+        allowedHosts: [process.env.HOST || 'localhost']
     },
     assetsInclude: ['**/*.md'],
     build: {
