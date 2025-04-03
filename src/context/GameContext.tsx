@@ -231,10 +231,6 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [gameState, dispatch]);
 
-  const checkPlayerCollisionOnEnemy = useCallback(() => {
-
-  })
-
   // Context value
   const value: GameContextType = {
     ...gameState,

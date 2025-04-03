@@ -1,12 +1,11 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useDispatch, useSelector } from 'react-redux';
-import { RootState } from '@/store';
+import { useDispatch } from 'react-redux';
 import * as THREE from 'three';
-import { v4 as uuidv4 } from 'uuid';
 import { useSettings } from '@/context/SettingsContext';
 import { endGame as reduxEndGame, incrementScore } from '@/store/gameSlice';
 import { updateHighScore, incrementGamesPlayed } from '@/utils/gameStorage';
+import GameController from '@/controllers/gameController';
 
 const Game: React.FC = () => {
     const navigate = useNavigate();
@@ -19,7 +18,7 @@ const Game: React.FC = () => {
         fireSpeed,
         fireStrength,
         horizontalSpeed,
-        fireRate = 0.2, // Default fire rate in seconds (200ms)
+        fireRate = 0.2,
         difficulty,
     } = useSettings();
 
@@ -39,20 +38,22 @@ const Game: React.FC = () => {
     const sceneRef = useRef<THREE.Scene | null>(null);
     const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
     const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+    const gameControllerRef = useRef<GameController | null>(null);
 
     // Player state
     const playerRef = useRef({
         position: new THREE.Vector3(0, 0, 0),
         rotation: new THREE.Euler(0, 0, 0),
         velocity: new THREE.Vector3(0, 0, 0),
-        mesh: null as THREE.Mesh | null,
+        shipControl: null as any,
         lastFireTime: 0,
         isInvincible: false,
     });
 
     // Game objects
-    const projectilesRef = useRef<THREE.Mesh[]>([]);
-    const enemiesRef = useRef<THREE.Mesh[]>([]);
+    const projectilesRef = useRef<any[]>([]);
+    const enemiesRef = useRef<any[]>([]);
+    const effectsRef = useRef<any[]>([]);
 
     // Key states
     const keysRef = useRef({
@@ -65,7 +66,7 @@ const Game: React.FC = () => {
         e: false,
     });
 
-    // Track if game has been started (for incrementGamesPlayed)
+    // Track if game has been started
     const hasGameStarted = useRef(false);
 
     // Initialize Three.js
@@ -95,22 +96,20 @@ const Game: React.FC = () => {
         containerRef.current.appendChild(renderer.domElement);
         rendererRef.current = renderer;
 
-        // Add ambient light
-        const ambientLight = new THREE.AmbientLight(0x404040);
-        scene.add(ambientLight);
+        // Create game controller
+        const gameController = new GameController(scene);
+        gameControllerRef.current = gameController;
 
-        // Add directional light
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-        directionalLight.position.set(0, 1, 1);
-        scene.add(directionalLight);
+        // Setup basic scene (lights and grid)
+        const sceneSetup = gameController.setupBasicScene();
 
         // Create player ship
-        createPlayerShip();
-
-        // Add grid
-        const gridHelper = new THREE.GridHelper(50, 10, 0x444444, 0x222222);
-        gridHelper.rotation.x = Math.PI / 2;
-        scene.add(gridHelper);
+        const playerShip = gameController.createPlayerShip(
+            new THREE.Vector3(0, 0, 0),
+            new THREE.Euler(0, 0, 0),
+            false // Set to true for debugging hitboxes
+        );
+        playerRef.current.shipControl = playerShip;
 
         // Initial render
         renderer.render(scene, camera);
@@ -118,9 +117,8 @@ const Game: React.FC = () => {
         // Start the game
         startGame();
 
-        // Increment games played only once when game starts
+        // Increment games played only once
         if (!hasGameStarted.current) {
-            console.log('Incrementing games played count');
             incrementGamesPlayed();
             hasGameStarted.current = true;
         }
@@ -150,48 +148,24 @@ const Game: React.FC = () => {
                 cancelAnimationFrame(requestRef.current);
             }
 
-            // Dispose of geometries and materials
-            if (sceneRef.current) {
-                sceneRef.current.traverse((object) => {
-                    if (object instanceof THREE.Mesh) {
-                        object.geometry.dispose();
-                        if (object.material instanceof THREE.Material) {
-                            object.material.dispose();
-                        } else if (Array.isArray(object.material)) {
-                            object.material.forEach((material) => material.dispose());
-                        }
-                    }
-                });
+            // Dispose of player ship
+            if (playerRef.current.shipControl) {
+                playerRef.current.shipControl.dispose();
             }
+
+            // Dispose of projectiles
+            projectilesRef.current.forEach(p => p.dispose());
+            
+            // Dispose of enemies
+            enemiesRef.current.forEach(e => e.dispose());
+            
+            // Dispose of effects
+            effectsRef.current.forEach(e => e.disposeAll && e.disposeAll());
+            
+            // Dispose of scene setup
+            sceneSetup.dispose();
         };
     }, []);
-
-    // Add cleanup for particles on game end
-    useEffect(() => {
-        return () => {
-            // Limpar todas as partículas quando o componente for desmontado
-            if (sceneRef.current && (sceneRef.current as any).particles) {
-                const particles = (sceneRef.current as any).particles;
-                particles.forEach((particle: THREE.Mesh) => {
-                    sceneRef.current?.remove(particle);
-                    if (particle.geometry) particle.geometry.dispose();
-                    if (particle.material instanceof THREE.Material) {
-                        particle.material.dispose();
-                    }
-                });
-                (sceneRef.current as any).particles = [];
-            }
-        };
-    }, []);
-
-    // Monitorar mudanças no playerHealth e playerLives para debug
-    useEffect(() => {
-        console.log(`Health state changed to: ${playerHealth}`);
-    }, [playerHealth]);
-
-    useEffect(() => {
-        console.log(`Lives state changed to: ${playerLives}`);
-    }, [playerLives]);
 
     // Set up keyboard controls
     useEffect(() => {
@@ -232,50 +206,6 @@ const Game: React.FC = () => {
         };
     }, []);
 
-    // Create player ship
-    const createPlayerShip = () => {
-        if (!sceneRef.current) return;
-
-        // Create the ship body
-        const geometry = new THREE.BoxGeometry(1, 2, 0.5);
-        const material = new THREE.MeshBasicMaterial({ color: 0x44aaff });
-        const ship = new THREE.Mesh(geometry, material);
-
-        // Add wings
-        const wingGeometry = new THREE.BoxGeometry(3, 1, 0.2);
-        const wingMaterial = new THREE.MeshBasicMaterial({ color: 0x2288cc });
-        const wings = new THREE.Mesh(wingGeometry, wingMaterial);
-        wings.position.y = -0.5;
-        ship.add(wings);
-
-        // Add cockpit
-        const cockpitGeometry = new THREE.SphereGeometry(0.4, 8, 8);
-        const cockpitMaterial = new THREE.MeshBasicMaterial({ color: 0x88ccff });
-        const cockpit = new THREE.Mesh(cockpitGeometry, cockpitMaterial);
-        cockpit.position.y = 0.5;
-        cockpit.position.z = 0.2;
-        ship.add(cockpit);
-
-        // Add hitbox visualization (opcionalmente, para debug)
-        const hitboxGeometry = new THREE.SphereGeometry(1.5, 8, 8);
-        const hitboxMaterial = new THREE.MeshBasicMaterial({
-            color: 0xff0000,
-            transparent: true,
-            opacity: 0.2,
-            wireframe: true,
-        });
-        const hitbox = new THREE.Mesh(hitboxGeometry, hitboxMaterial);
-        // Comente a linha abaixo depois que terminar o debugging
-        // ship.add(hitbox);
-
-        // Position ship
-        ship.position.set(0, 0, 0);
-
-        // Add to scene
-        sceneRef.current.add(ship);
-        playerRef.current.mesh = ship;
-    };
-
     // Add rotation functionality
     const rotatePlayer = (direction: number) => {
         playerRef.current.rotation.z += direction * shipTorque;
@@ -283,54 +213,24 @@ const Game: React.FC = () => {
 
     // Fire projectile
     const fireProjectile = () => {
-        if (!sceneRef.current || !playerRef.current.mesh) return;
+        if (!gameControllerRef.current || !playerRef.current.shipControl) return;
 
-        // Create projectile
-        const geometry = new THREE.SphereGeometry(0.2, 8, 8);
-        const material = new THREE.MeshBasicMaterial({ color: 0x00ffff });
-        const projectile = new THREE.Mesh(geometry, material);
-
-        // Position projectile at ship's position
-        projectile.position.copy(playerRef.current.mesh.position);
-
-        // Set velocity (forward direction)
         const direction = new THREE.Vector3(0, 1, 0);
         direction.applyEuler(playerRef.current.rotation);
 
-        // Add to scene and tracking array
-        sceneRef.current.add(projectile);
-        projectilesRef.current.push(projectile);
+        const projectile = gameControllerRef.current.createProjectile(
+            playerRef.current.position.clone(),
+            direction,
+            fireSpeed,
+            fireStrength
+        );
 
-        // Store direction on the projectile object
-        (projectile as any).velocity = direction.multiplyScalar(fireSpeed);
-        (projectile as any).lifetime = 2000; // 2 seconds
-        (projectile as any).damage = fireStrength;
+        projectilesRef.current.push(projectile);
     };
 
     // Spawn enemy
     const spawnEnemy = () => {
-        if (!sceneRef.current) return;
-
-        // Create enemy
-        const geometry = new THREE.BoxGeometry(1, 1, 1);
-        const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-        const enemy = new THREE.Mesh(geometry, material);
-
-        // Add hitbox visualization (opcional, para debug)
-        const hitboxGeometry = new THREE.SphereGeometry(1.5, 8, 8);
-        const hitboxMaterial = new THREE.MeshBasicMaterial({
-            color: 0xff0000,
-            transparent: true,
-            opacity: 0.2,
-            wireframe: true,
-        });
-        const hitbox = new THREE.Mesh(hitboxGeometry, hitboxMaterial);
-        // Comente a linha abaixo depois que terminar o debugging
-        // enemy.add(hitbox);
-
-        // Position randomly at top of screen
-        const randomX = Math.random() * 20 - 10; // -10 to 10
-        enemy.position.set(randomX, 20, 0);
+        if (!gameControllerRef.current) return;
 
         // Adjust enemy properties based on difficulty
         let enemyHealth = 10;
@@ -355,86 +255,44 @@ const Game: React.FC = () => {
                 break;
         }
 
-        // Add velocity
-        (enemy as any).velocity = new THREE.Vector3(0, -enemySpeed, 0);
-        (enemy as any).health = enemyHealth;
-        (enemy as any).points = enemyPoints;
+        // Position randomly at top of screen
+        const randomX = Math.random() * 20 - 10; // -10 to 10
+        const position = new THREE.Vector3(randomX, 20, 0);
+        const velocity = new THREE.Vector3(0, -enemySpeed, 0);
 
-        // Add to scene and tracking array
-        sceneRef.current.add(enemy);
+        const enemy = gameControllerRef.current.createEnemy(
+            position,
+            velocity,
+            enemyHealth,
+            enemyPoints,
+            false // set to true for debugging hitboxes
+        );
+
         enemiesRef.current.push(enemy);
-    };
-
-    // Create explosion effect
-    const createExplosion = (position: THREE.Vector3) => {
-        if (!sceneRef.current) return;
-
-        // Number of particles
-        const particleCount = 15;
-
-        // Create particles
-        for (let i = 0; i < particleCount; i++) {
-            // Create particle
-            const size = Math.random() * 0.3 + 0.1;
-            const geometry = new THREE.SphereGeometry(size, 4, 4);
-
-            // Randomize color between yellow, orange and red
-            const colors = [0xffff00, 0xff8800, 0xff0000];
-            const material = new THREE.MeshBasicMaterial({
-                color: colors[Math.floor(Math.random() * colors.length)],
-                transparent: true,
-                opacity: 0.8,
-            });
-
-            const particle = new THREE.Mesh(geometry, material);
-
-            // Position at explosion center
-            particle.position.copy(position);
-
-            // Random velocity in all directions
-            const speed = Math.random() * 5 + 3;
-            const direction = new THREE.Vector3(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).normalize();
-
-            (particle as any).velocity = direction.multiplyScalar(speed);
-            (particle as any).lifetime = Math.random() * 500 + 500; // 0.5-1 second
-
-            // Add to scene
-            sceneRef.current.add(particle);
-
-            // Add to list for updates
-            const particles = (sceneRef.current as any).particles || [];
-            particles.push(particle);
-            (sceneRef.current as any).particles = particles;
-        }
     };
 
     // Player damage function
     const damagePlayer = (amount: number) => {
-        // Verificações iniciais
+        // Skip if player is invincible or game is over
         if (playerRef.current.isInvincible || gameOver) {
-            console.log('Dano ignorado - invencível ou game over');
             return;
         }
     
-        // Calcular nova saúde
+        // Calculate new health
         setPlayerHealth((prevHealth) => {
             const newHealth = Math.max(0, prevHealth - amount);
-            console.log(`Saúde: ${prevHealth} -> ${newHealth}`);
             
-            // Se a saúde chegar a zero, reduzir vidas
+            // If health reaches zero, reduce lives
             if (newHealth === 0) {
                 setPlayerLives((prevLives) => {
                     const newLives = prevLives - 1;
-                    console.log(`Vidas: ${prevLives} -> ${newLives}`);
     
                     if (newLives <= 0) {
-                        console.log('Game Over - Sem vidas');
                         setTimeout(endGame, 50);
                     } else {
-                        // Restaurar saúde após perda de vida
+                        // Restore health after losing a life
                         setTimeout(() => {
                             setPlayerHealth(100);
-                            console.log('Saúde restaurada para 100');
                         }, 500);
                     }
     
@@ -445,136 +303,53 @@ const Game: React.FC = () => {
             return newHealth;
         });
 
-        // Remover invincibilidade após um tempo
+        // Set invincibility for a short time
         playerRef.current.isInvincible = true;
         setTimeout(() => {
             playerRef.current.isInvincible = false;
-            console.log('Invencibilidade encerrada');
         }, 1000);
 
-        // Feedback visual de dano
-        if (playerRef.current.mesh) {
-            const originalMaterial = (playerRef.current.mesh.material as THREE.Material).clone();
-            playerRef.current.mesh.material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+        // Visual feedback for damage
+        if (playerRef.current.shipControl) {
+            const shipControl = playerRef.current.shipControl;
+            const originalMaterial = shipControl.mesh.material.clone();
+            shipControl.setMaterial(new THREE.MeshBasicMaterial({ color: 0xff0000 }));
 
-            // Efeito de piscar
+            // Blinking effect
             let visible = false;
             const blinkInterval = setInterval(() => {
-                if (playerRef.current.mesh && playerRef.current.isInvincible) {
-                    playerRef.current.mesh.visible = visible;
+                if (playerRef.current.shipControl && playerRef.current.isInvincible) {
+                    shipControl.setVisible(visible);
                     visible = !visible;
                 } else {
                     clearInterval(blinkInterval);
-                    if (playerRef.current.mesh) {
-                        playerRef.current.mesh.visible = true;
-                        playerRef.current.mesh.material = originalMaterial;
+                    if (playerRef.current.shipControl) {
+                        shipControl.setVisible(true);
+                        shipControl.setMaterial(originalMaterial);
                     }
                 }
             }, 200);
         }
     };
 
-    // Método de colisão atualizado
-    const handleCollision = (damage: number) => {
-        console.log(`Colisão detectada - aplicando dano: ${damage}`);
-        damagePlayer(damage);
-    };
-
     // End game function
     const endGame = () => {
-        console.log('Game Over!');
         setGameOver(true);
         setIsPaused(true);
-        // Garantir que o jogador tenha exatamente 0 vidas (não negativas)
         setPlayerLives(0);
 
-        // Limpar qualquer intervalo que possa estar rodando
-        if (playerRef.current.mesh) {
-            playerRef.current.mesh.visible = true;
+        // Make sure player is visible
+        if (playerRef.current.shipControl) {
+            playerRef.current.shipControl.setVisible(true);
         }
 
-        // Dispatch de endGame para o Redux (salva o high score)
+        // Update Redux and localStorage
         dispatch(reduxEndGame());
-
-        // Salvar no localStorage com nossa utility
         updateHighScore(score);
-        // Removido incrementGamesPlayed() daqui para evitar múltiplas contagens
-    };
-
-    // Tratar colisões com inimigos que atingem a parte inferior
-    const handleEnemyReachedBottom = (enemy: THREE.Mesh) => {
-        // Damage player when enemy reaches bottom (varies by difficulty)
-        let bottomDamage = 20;
-
-        switch (difficulty) {
-            case 'easy':
-                bottomDamage = 10;
-                break;
-            case 'medium':
-                bottomDamage = 20;
-                break;
-            case 'hard':
-                bottomDamage = 30;
-                break;
-        }
-
-        // Aplicar o dano apenas se estiver ativo
-        if (sceneRef.current && !gameOver) {
-            console.log(`Enemy reached bottom! Applying damage: ${bottomDamage}`);
-            // Use a new collision handler
-            handleCollision(bottomDamage);
-        } else {
-            console.log('Not applying bottom damage - game over or scene not available');
-        }
-    };
-
-    // Tratar colisões entre jogador e inimigos
-    const handlePlayerEnemyCollision = (enemy: THREE.Mesh) => {
-        // Damage player (varies by difficulty)
-        let collisionDamage = 30;
-
-        switch (difficulty) {
-            case 'easy':
-                collisionDamage = 20;
-                break;
-            case 'medium':
-                collisionDamage = 30;
-                break;
-            case 'hard':
-                collisionDamage = 50;
-                break;
-        }
-
-        // Log de colisão para debug
-        console.log(`Collision with enemy! Damage: ${collisionDamage}`);
-
-        // Use the new collision handler
-        handleCollision(collisionDamage);
-    };
-
-    // For debugging - explicit damage function
-    const applyDirectDamage = (damage: number) => {
-        // console.log('Applying direct damage:', damage);
-
-        // Aplicar dano diretamente
-        const newHealth = Math.max(0, playerHealth - damage);
-        setPlayerHealth(newHealth);
-
-        // Apply the visual effect for feedback
-        if (playerRef.current.mesh) {
-            playerRef.current.mesh.material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-            setTimeout(() => {
-                if (playerRef.current.mesh) {
-                    playerRef.current.mesh.material = new THREE.MeshBasicMaterial({ color: 0x44aaff });
-                }
-            }, 200);
-        }
     };
 
     // Start game loop
     const startGame = () => {
-        console.log('Starting game with difficulty:', difficulty);
-
         // Determine spawn interval based on difficulty
         let spawnInterval = 2000; // Default: 2 seconds (medium)
 
@@ -616,27 +391,10 @@ const Game: React.FC = () => {
 
         requestRef.current = requestAnimationFrame(animate);
 
-        // Remove enemies that might still be in the scene on unmount
         return () => {
             clearInterval(enemySpawnTimer);
             if (requestRef.current) {
                 cancelAnimationFrame(requestRef.current);
-            }
-
-            // Limpar inimigos
-            if (enemiesRef.current && enemiesRef.current.length > 0) {
-                enemiesRef.current.forEach((enemy) => {
-                    sceneRef.current?.remove(enemy);
-                });
-                enemiesRef.current = [];
-            }
-
-            // Limpar projéteis
-            if (projectilesRef.current && projectilesRef.current.length > 0) {
-                projectilesRef.current.forEach((projectile) => {
-                    sceneRef.current?.remove(projectile);
-                });
-                projectilesRef.current = [];
             }
         };
     };
@@ -678,14 +436,13 @@ const Game: React.FC = () => {
         playerRef.current.position.y = Math.max(-15, Math.min(15, playerRef.current.position.y));
 
         // Update player mesh
-        if (playerRef.current.mesh) {
-            playerRef.current.mesh.position.copy(playerRef.current.position);
-            playerRef.current.mesh.rotation.copy(playerRef.current.rotation);
+        if (playerRef.current.shipControl) {
+            playerRef.current.shipControl.updatePosition(playerRef.current.position);
+            playerRef.current.shipControl.updateRotation(playerRef.current.rotation);
         }
 
         // Fire weapon
         if (keys[' ']) {
-            // Limit firing rate by checking time since last shot
             const now = Date.now();
             if (!playerRef.current.lastFireTime || now - playerRef.current.lastFireTime > fireRate * 100) {
                 fireProjectile();
@@ -694,139 +451,191 @@ const Game: React.FC = () => {
         }
 
         // Update projectiles
-        const projectiles = projectilesRef.current;
-        for (let i = projectiles.length - 1; i >= 0; i--) {
-            const projectile = projectiles[i];
-
-            // Update position
-            const velocity = (projectile as any).velocity;
-            projectile.position.add(velocity.clone().multiplyScalar(deltaTime));
-
-            // Update lifetime
-            (projectile as any).lifetime -= deltaTime * 1000;
-
-            // Remove expired projectiles
-            if ((projectile as any).lifetime <= 0 || Math.abs(projectile.position.x) > 20 || Math.abs(projectile.position.y) > 20) {
-                sceneRef.current?.remove(projectile);
-                projectiles.splice(i, 1);
-            }
-        }
-
-        // Update enemies
-        const enemies = enemiesRef.current;
-        for (let i = enemies.length - 1; i >= 0; i--) {
-            const enemy = enemies[i];
-
-            // Update position
-            const velocity = (enemy as any).velocity;
-            if (!velocity) continue; // Garantir que o inimigo tem velocidade definida
-
-            enemy.position.add(velocity.clone().multiplyScalar(deltaTime));
-
-            // Check if enemy reached bottom of screen
-            if (enemy.position.y < -15) {
-                // Tratar dano quando inimigo atinge parte inferior
-                handleEnemyReachedBottom(enemy);
-
-                // Remove enemy
-                sceneRef.current?.remove(enemy);
-                enemies.splice(i, 1);
-                continue;
-            }
-
-            // Check collision with player
-            if (playerRef.current.mesh && !playerRef.current.isInvincible && !gameOver) {
-                const distanceToPlayer = enemy.position.distanceTo(playerRef.current.mesh.position);
-
-                // Ajustando o raio de colisão para ser mais preciso
-                // O valor 1.5 é um raio de colisão mais conservador
-                // (deve ser ajustado de acordo com o tamanho real dos objetos)
-                const collisionRadius = 1.5;
-
-                if (distanceToPlayer < collisionRadius) {
-                    // Raio de colisão ajustado
-                    // Log de colisão para debug
-                    // console.log(`Collision detected! Distance: ${distanceToPlayer.toFixed(2)}, Radius: ${collisionRadius}`);
-
-                    // Tratar colisão
-                    handlePlayerEnemyCollision(enemy);
-
-                    // Remove enemy
-                    sceneRef.current?.remove(enemy);
-                    enemies.splice(i, 1);
-                    continue;
-                }
-            }
-
-            // Check collision with projectiles
-            for (let j = projectiles.length - 1; j >= 0; j--) {
-                const projectile = projectiles[j];
-
-                // Simple distance-based collision
-                const distance = projectile.position.distanceTo(enemy.position);
-                // Ajustando o raio de colisão para ser mais preciso
-                // (0.7 = 0.2 do projétil + 0.5 do inimigo)
-                const collisionRadius = 0.7;
-
-                if (distance < collisionRadius) {
-                    // Raio de colisão ajustado
-                    // Damage enemy
-                    (enemy as any).health -= (projectile as any).damage || fireStrength;
-
-                    // Remove projectile
-                    sceneRef.current?.remove(projectile);
-                    projectiles.splice(j, 1);
-
-                    // Check if enemy destroyed
-                    if ((enemy as any).health <= 0) {
-                        // Create explosion effect
-                        createExplosion(enemy.position.clone());
-
-                        // Remove enemy
-                        sceneRef.current?.remove(enemy);
-                        enemies.splice(i, 1);
-
-                        // Increment score
-                        const enemyPoints = (enemy as any).points;
-                        setScore((prev) => prev + enemyPoints);
-                        // Também atualizar no Redux
-                        dispatch(incrementScore(enemyPoints));
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Update explosion particles
-        if (sceneRef.current && (sceneRef.current as any).particles) {
-            const particles = (sceneRef.current as any).particles;
-
-            for (let i = particles.length - 1; i >= 0; i--) {
-                const particle = particles[i];
-                if (!particle) continue; // Verificar se a partícula existe
-
+        updateProjectiles(deltaTime);
+        
+        // Update enemies and check collisions
+        updateEnemies(deltaTime);
+        
+        // Update effects (explosions, particles, etc.)
+        updateEffects(deltaTime);
+    };
+    
+    // Update visual effects (explosions, particles)
+    const updateEffects = (deltaTime: number) => {
+        if (!sceneRef.current) return;
+        
+        const effects = effectsRef.current;
+        
+        for (let i = effects.length - 1; i >= 0; i--) {
+            const effect = effects[i];
+            
+            // Update each particle in the effect
+            for (let j = effect.particles.length - 1; j >= 0; j--) {
+                const particle = effect.particles[j];
+                
                 // Update position
-                const velocity = (particle as any).velocity;
-                if (!velocity) continue; // Verificar se a partícula tem velocidade
-
-                particle.position.add(velocity.clone().multiplyScalar(deltaTime));
-
+                if ((particle as any).velocity) {
+                    particle.position.add((particle as any).velocity.clone().multiplyScalar(deltaTime));
+                }
+                
                 // Update lifetime
                 (particle as any).lifetime -= deltaTime * 1000;
-
+                
                 // Update opacity for fade out
                 if (particle.material instanceof THREE.Material) {
                     particle.material.opacity = Math.min(1, (particle as any).lifetime / 500);
                 }
+                
                 // Remove expired particles
                 if ((particle as any).lifetime <= 0) {
                     sceneRef.current.remove(particle);
-                    particles.splice(i, 1);
-
+                    effect.particles.splice(j, 1);
+                    
                     // Dispose geometry and material
                     (particle.geometry as THREE.BufferGeometry).dispose();
                     if (particle.material instanceof THREE.Material) {
                         particle.material.dispose();
+                    }
+                }
+            }
+            
+            // Remove effect if all particles are gone
+            if (effect.particles.length === 0) {
+                effects.splice(i, 1);
+            }
+        }
+    };
+    
+    // Update projectiles
+    const updateProjectiles = (deltaTime: number) => {
+        const projectiles = projectilesRef.current;
+        
+        for (let i = projectiles.length - 1; i >= 0; i--) {
+            const projectile = projectiles[i];
+            
+            // Update position
+            projectile.mesh.position.add(
+                projectile.velocity.clone().multiplyScalar(deltaTime)
+            );
+            
+            // Update lifetime
+            projectile.lifetime -= deltaTime * 1000;
+            
+            // Remove expired projectiles
+            if (
+                projectile.lifetime <= 0 || 
+                Math.abs(projectile.mesh.position.x) > 20 || 
+                Math.abs(projectile.mesh.position.y) > 20
+            ) {
+                projectile.dispose();
+                projectiles.splice(i, 1);
+            }
+        }
+    };
+    
+    // Update enemies
+    const updateEnemies = (deltaTime: number) => {
+        if (!gameControllerRef.current) return;
+        
+        const enemies = enemiesRef.current;
+        const projectiles = projectilesRef.current;
+        
+        for (let i = enemies.length - 1; i >= 0; i--) {
+            const enemy = enemies[i];
+            
+            // Update position
+            enemy.mesh.position.add(
+                enemy.velocity.clone().multiplyScalar(deltaTime)
+            );
+            
+            // Check if enemy reached bottom of screen
+            if (enemy.mesh.position.y < -15) {
+                // Apply damage based on difficulty
+                let bottomDamage = 20;
+                switch (difficulty) {
+                    case 'easy': bottomDamage = 10; break;
+                    case 'medium': bottomDamage = 20; break;
+                    case 'hard': bottomDamage = 30; break;
+                }
+                
+                if (!gameOver) {
+                    damagePlayer(bottomDamage);
+                }
+                
+                // Remove enemy
+                enemy.dispose();
+                enemies.splice(i, 1);
+                continue;
+            }
+            
+            // Check collision with player
+            if (
+                playerRef.current.shipControl && 
+                !playerRef.current.isInvincible && 
+                !gameOver
+            ) {
+                const collision = gameControllerRef.current.checkCollision(
+                    enemy.mesh,
+                    playerRef.current.shipControl.mesh,
+                    1.0,  // Enemy radius
+                    1.5   // Player radius
+                );
+                
+                if (collision) {
+                    // Apply damage based on difficulty
+                    let collisionDamage = 30;
+                    switch (difficulty) {
+                        case 'easy': collisionDamage = 20; break;
+                        case 'medium': collisionDamage = 30; break;
+                        case 'hard': collisionDamage = 50; break;
+                    }
+                    
+                    damagePlayer(collisionDamage);
+                    
+                    // Remove enemy
+                    enemy.dispose();
+                    enemies.splice(i, 1);
+                    continue;
+                }
+            }
+            
+            // Check collision with projectiles
+            for (let j = projectiles.length - 1; j >= 0; j--) {
+                const projectile = projectiles[j];
+                
+                const collision = gameControllerRef.current.checkCollision(
+                    projectile.mesh,
+                    enemy.mesh,
+                    0.2,  // Projectile radius
+                    0.8   // Enemy radius
+                );
+                
+                if (collision) {
+                    // Apply damage to enemy
+                    const destroyed = enemy.takeDamage(projectile.damage);
+                    
+                    // Remove projectile
+                    projectile.dispose();
+                    projectiles.splice(j, 1);
+                    
+                    // If enemy is destroyed
+                    if (destroyed) {
+                        // Create explosion
+                        if (gameControllerRef.current) {
+                            const explosion = gameControllerRef.current.createExplosion(
+                                enemy.mesh.position.clone()
+                            );
+                            effectsRef.current.push(explosion);
+                        }
+                        
+                        // Update score
+                        setScore((prev) => prev + enemy.points);
+                        dispatch(incrementScore(enemy.points));
+                        
+                        // Remove enemy
+                        enemy.dispose();
+                        enemies.splice(i, 1);
+                        break;
                     }
                 }
             }
@@ -839,12 +648,18 @@ const Game: React.FC = () => {
             rendererRef.current.render(sceneRef.current, cameraRef.current);
         }
     };
+    
+    // Debug function to apply direct damage (for testing)
+    const applyDirectDamage = (damage: number) => {
+        if (gameOver) return;
+        damagePlayer(damage);
+    };
 
     return (
         <div className='w-full h-screen relative bg-black'>
             {/* Three.js container */}
             <div ref={containerRef} className='w-full h-full absolute top-0 left-0' />
-
+            
             {/* HUD overlay */}
             <div className='absolute top-0 left-0 w-full p-4 text-white flex justify-between'>
                 <div>
@@ -856,9 +671,6 @@ const Game: React.FC = () => {
                     <div className='mt-2 flex space-x-2'>
                         <button className='bg-red-500 px-2 py-1 text-xs rounded' onClick={() => applyDirectDamage(10)}>
                             Take 10 Damage
-                        </button>
-                        <button className='bg-red-500 px-2 py-1 text-xs rounded' onClick={() => handleCollision(30)}>
-                            Collision 30
                         </button>
                     </div>
                 </div>
@@ -880,16 +692,22 @@ const Game: React.FC = () => {
                     </div>
                 </div>
             </div>
-
+            
             {/* Pause Menu */}
             {isPaused && !gameOver && (
                 <div className='absolute inset-0 flex items-center justify-center bg-black bg-opacity-70'>
                     <div className='bg-gray-800 p-8 rounded-lg text-white text-center'>
                         <h2 className='text-2xl font-bold mb-4'>Paused</h2>
-                        <button className='bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded mr-2' onClick={() => setIsPaused(false)}>
+                        <button 
+                            className='bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded mr-2' 
+                            onClick={() => setIsPaused(false)}
+                        >
                             Resume
                         </button>
-                        <button className='bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded' onClick={() => navigate('/')}>
+                        <button 
+                            className='bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded' 
+                            onClick={() => navigate('/')}
+                        >
                             Quit
                         </button>
                     </div>
@@ -902,10 +720,16 @@ const Game: React.FC = () => {
                     <div className='bg-gray-800 p-8 rounded-lg text-white text-center'>
                         <h2 className='text-3xl font-bold mb-4'>Game Over</h2>
                         <p className='text-xl mb-4'>Final Score: {score}</p>
-                        <button className='bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded mr-2' onClick={() => navigate('/')}>
+                        <button 
+                            className='bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded mr-2' 
+                            onClick={() => navigate('/')}
+                        >
                             Main Menu
                         </button>
-                        <button className='bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded' onClick={() => window.location.reload()}>
+                        <button 
+                            className='bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded' 
+                            onClick={() => window.location.reload()}
+                        >
                             Play Again
                         </button>
                     </div>
